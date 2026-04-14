@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskqueue
+      POSTGRES_PASSWORD: taskqueue
+      POSTGRES_DB: taskqueue
+    ports:
+     - "5432:5432"
+    volumes:
+     - postgres-data:/var/lib/postgresql/data
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+     - "6379:6379"
+    command: redis-server --appendonly yes
+  
+volumes:
+  postgres-data:
