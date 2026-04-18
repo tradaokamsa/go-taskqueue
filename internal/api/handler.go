@@ -151,3 +151,19 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, toJobResponse(job))
 }
+
+func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := h.store.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "unhealthy",
+			"error":  "database connection failed",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
