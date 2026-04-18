@@ -1,0 +1,153 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+)
+
+type Handler struct {
+	store JobStore
+	queue Queue
+}
+
+func NewHandler(store JobStore, queue Queue) *Handler {
+	return &Handler{
+		store: store,
+		queue: queue,
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if data != nil {
+		json.NewEncoder(w).Encode(data)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+type SubmitJobRequest struct {
+	Type        string          `json:"type"`
+	Priority    int             `json:"priority"`
+	Payload     json.RawMessage `json:"payload"`
+	Constraints json.RawMessage `json:"constraints,omitempty"`
+	MaxRetries  int             `json:"max_retries,omitempty"`
+	TimeoutSec  int             `json:"timeout_sec,omitempty"`
+	ScheduledAt *string         `json:"scheduled_at,omitempty"`
+}
+
+type JobResponse struct {
+	ID          string          `json:"id"`
+	Type        string          `json:"type"`
+	Priority    int             `json:"priority"`
+	Status      string          `json:"status"`
+	Payload     json.RawMessage `json:"payload"`
+	Constraints json.RawMessage `json:"constraints,omitempty"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	Error       *string         `json:"error,omitempty"`
+	MaxRetries  int             `json:"max_retries,omitempty"`
+	Attempt     int             `json:"attempt"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
+}
+
+func toJobResponse(job *domain.Job) JobResponse {
+	return JobResponse{
+		ID:          job.ID,
+		Type:        job.Type,
+		Priority:    job.Priority,
+		Status:      string(job.Status),
+		Payload:     job.Payload,
+		Constraints: job.Constraints,
+		Result:      job.Result,
+		Error:       job.Error,
+		MaxRetries:  job.MaxRetries,
+		Attempt:     job.Attempt,
+		CreatedAt:   job.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   job.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
+	var req SubmitJobRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.Type == "" {
+		writeError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	if req.MaxRetries == 0 {
+		req.MaxRetries = 3
+	}
+	if req.TimeoutSec == 0 {
+		req.TimeoutSec = 2700
+	}
+
+	var scheduledAt *time.Time
+	if req.ScheduledAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ScheduledAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid scheduled_at format, use RFC3339")
+			return
+		}
+		scheduledAt = &t
+	}
+
+	status := domain.StatusPending
+	if scheduledAt != nil {
+		status = domain.StatusScheduled
+	}
+
+	job := &domain.Job{
+		Type:        req.Type,
+		Priority:    req.Priority,
+		Status:      status,
+		Payload:     req.Payload,
+		Constraints: req.Constraints,
+		MaxRetries:  req.MaxRetries,
+		TimeoutSec:  req.TimeoutSec,
+		ScheduledAt: scheduledAt,
+	}
+
+	if err := h.store.CreateJob(r.Context(), job); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+
+	if h.queue != nil {
+		if err := h.queue.Enqueue(r.Context(), job); err != nil {
+			// TODO
+		}
+	}
+
+	writeJSON(w, http.StatusCreated, toJobResponse(job))
+}
+
+func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+	job, err := h.store.GetJob(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get job")
+		return
+	}
+	writeJSON(w, http.StatusOK, toJobResponse(job))
+}
