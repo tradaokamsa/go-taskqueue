@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -150,6 +151,103 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toJobResponse(job))
+}
+
+func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	opts := ListOptions{
+		Cursor: r.URL.Query().Get("cursor"),
+		Status: r.URL.Query().Get("status"),
+		Type:   r.URL.Query().Get("type"),
+	}
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil {
+			opts.Limit = limit
+		}
+	}
+
+	jobs, nextCursor, err := h.store.ListJobs(r.Context(), opts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list jobs")
+		return
+	}
+
+	jobResponses := make([]JobResponse, len(jobs))
+	for i, job := range jobs {
+		jobResponses[i] = toJobResponse(job)
+	}
+
+	response := map[string]any{
+		"jobs": jobResponses,
+	}
+	if nextCursor != "" {
+		response["next_cursor"] = nextCursor
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+
+	if err := h.store.CancelJob(r.Context(), id); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			writeError(w, http.StatusBadRequest, "job cannot be cancelled in its current state")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to cancel job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "job id is required")
+		return
+	}
+
+	job, err := h.store.RetryJob(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			writeError(w, http.StatusBadRequest, "job cannot be retried in its current state")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to retry job")
+		return
+	}
+
+	// Re-enqueue if queue is available
+	if h.queue != nil {
+		if err := h.queue.Enqueue(r.Context(), job); err != nil {
+			// TODO
+		}
+	}
+
+	writeJSON(w, http.StatusOK, toJobResponse(job))
+}
+
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	// Stub, TODO
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pending":   0,
+		"running":   0,
+		"completed": 0,
+		"failed":    0,
+	})
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
