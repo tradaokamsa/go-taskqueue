@@ -53,7 +53,7 @@ type JobResponse struct {
 	Payload     json.RawMessage `json:"payload"`
 	Constraints json.RawMessage `json:"constraints,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
-	Error       *string         `json:"error,omitempty"`
+	Error       string          `json:"error,omitempty"`
 	MaxRetries  int             `json:"max_retries,omitempty"`
 	Attempt     int             `json:"attempt"`
 	CreatedAt   string          `json:"created_at"`

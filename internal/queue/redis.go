@@ -136,3 +136,60 @@ func (q *RedisQueue) Len(ctx context.Context) (int64, error) {
 func (q *RedisQueue) ProcessingCount(ctx context.Context) (int64, error) {
 	return q.client.HLen(ctx, processingKey).Result()
 }
+
+func (q *RedisQueue) Heartbeat(ctx context.Context, jobID string, workerID string) error {
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	value := workerID + ":" + timestamp
+
+	err := q.client.HSet(ctx, processingKey, jobID, value).Err()
+	if err != nil {
+		return fmt.Errorf("queue.Heartbeat: %w", err)
+	}
+	return nil
+}
+
+type StuckJob struct {
+	JobID    string
+	WorkerID string
+	LastSeen time.Time
+}
+
+func (q *RedisQueue) GetStuckJobs(ctx context.Context, timeout time.Duration) ([]StuckJob, error) {
+	result, err := q.client.HGetAll(ctx, processingKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("queue.GetStuckJobs: %w", err)
+	}
+
+	cutoff := time.Now().Add(-timeout).Unix()
+	var stuck []StuckJob
+
+	for jobID, value := range result {
+		var workerID string
+		var timestamp int64
+		_, err := fmt.Sscanf(value, "%s", &workerID)
+		if err != nil {
+			continue // Skip malformed entries
+		}
+
+		for i := len(value) - 1; i >= 0; i-- {
+			if value[i] == ':' {
+				workerID = value[:i]
+				fmt.Sscanf(value[i+1:], "%d", &timestamp)
+				break
+			}
+		}
+
+		if timestamp < cutoff {
+			stuck = append(stuck, StuckJob{
+				JobID:    jobID,
+				WorkerID: workerID,
+				LastSeen: time.Unix(timestamp, 0),
+			})
+		}
+	}
+	return stuck, nil
+}
+
+func (q *RedisQueue) RemoveFromProcessing(ctx context.Context, jobID string) error {
+	return q.client.HDel(ctx, processingKey, jobID).Err()
+}

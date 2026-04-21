@@ -23,7 +23,7 @@ type Job struct {
 	Payload     []byte
 	Constraints []byte
 	Result      []byte
-	Error       *string
+	Error       string
 
 	MaxRetries int
 	Attempt    int
