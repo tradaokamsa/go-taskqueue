@@ -58,7 +58,11 @@ func (s *PostgresStore) CreateJob(ctx context.Context, job *domain.Job) error {
 
 func (s *PostgresStore) GetJob(ctx context.Context, id string) (*domain.Job, error) {
 	query := `
-		SELECT id, type, priority, status, payload, constraints, result, error, max_retries, attempt, timeout_sec, worker_id, created_at, updated_at, scheduled_at, started_at, completed_at
+		SELECT id, type, priority, status, payload, constraints, result, 
+				COALESCE(error, '') as error,
+				max_retries, attempt, timeout_sec, 
+				COALESCE(worker_id, '') as worker_id, 
+				created_at, updated_at, scheduled_at, started_at, completed_at
 		FROM jobs
 		WHERE id = $1
 	`
@@ -145,8 +149,10 @@ func (s *PostgresStore) ListJobs(ctx context.Context, opts api.ListOptions) ([]*
 	}
 
 	query := `
-		SELECT id, type, priority, status, payload, constraints, result, error,
-				max_retries, attempt, timeout_sec, worker_id,
+		SELECT id, type, priority, status, payload, constraints, result, 
+				COALESCE(error, '') as error,
+				max_retries, attempt, timeout_sec, 
+				COALESCE(worker_id, '') as worker_id,
 				scheduled_at, started_at, completed_at, created_at, updated_at
 		FROM jobs
 		WHERE 1=1
@@ -261,8 +267,10 @@ func (s *PostgresStore) RetryJob(ctx context.Context, id string) (*domain.Job, e
 			completed_at = NULL,                                                                             
 			updated_at = now()
 		WHERE id = $1 AND status IN ('failed', 'dead')                                                       
-		RETURNING id, type, priority, status, payload, constraints, result, error,                           
-				max_retries, attempt, timeout_sec, worker_id,                                              
+		RETURNING id, type, priority, status, payload, constraints, result, 
+				COALESCE(error, '') as error,                           
+				max_retries, attempt, timeout_sec, 
+				COALESCE(worker_id, '') as worker_id,                                              
 				scheduled_at, started_at, completed_at, created_at, updated_at                             
     `
 
@@ -303,4 +311,235 @@ func (s *PostgresStore) RetryJob(ctx context.Context, id string) (*domain.Job, e
 	}
 
 	return job, nil
+}
+
+// atomically claims a job
+func (s *PostgresStore) ClaimJob(ctx context.Context, jobID string, workerID string) (*domain.Job, error) {
+	query := `                                                                                                                                        
+		UPDATE jobs                                                                                                                               
+		SET status = 'running',                                                                                                                   
+			worker_id = $2,                                                                                                                       
+			started_at = now(),                                                                                                                   
+			attempt = attempt + 1,                                                                                                                
+			updated_at = now()                                                                                                                    
+		WHERE id = $1 AND status IN ('pending', 'scheduled')                                                                                      
+		RETURNING id, type, priority, status, payload, constraints, result, 
+					COALESCE(error, '') as error,                                                                
+					max_retries, attempt, timeout_sec, 
+					COALESCE(worker_id, '') as worker_id,                                                                                   
+					scheduled_at, started_at, completed_at, created_at, updated_at                                                                  
+    `
+	job := &domain.Job{}
+	err := s.pool.QueryRow(ctx, query, jobID, workerID).Scan(
+		&job.ID,
+		&job.Type,
+		&job.Priority,
+		&job.Status,
+		&job.Payload,
+		&job.Constraints,
+		&job.Result,
+		&job.Error,
+		&job.MaxRetries,
+		&job.Attempt,
+		&job.TimeoutSec,
+		&job.WorkerID,
+		&job.ScheduledAt,
+		&job.StartedAt,
+		&job.CompletedAt,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, domain.ErrAlreadyClaimed
+		}
+		return nil, fmt.Errorf("store.ClaimJob: %w", err)
+	}
+
+	return job, nil
+}
+
+func (s *PostgresStore) CompleteJob(ctx context.Context, jobID string, result []byte) error {
+	query := `
+		UPDATE jobs
+		SET status = 'completed',
+			result = $2,
+			error = NULL,
+			completed_at = now(),
+			updated_at = now()
+		WHERE id = $1 AND status = 'running'
+	`
+	resultExec, err := s.pool.Exec(ctx, query, jobID, result)
+	if err != nil {
+		return fmt.Errorf("store.CompleteJob: %w", err)
+	}
+	if resultExec.RowsAffected() == 0 {
+		return domain.ErrInvalidTransition
+	}
+	return nil
+}
+
+func (s *PostgresStore) FailJob(ctx context.Context, jobID string, jobErr string, attempt int, maxRetries int) (shouldRetry bool, err error) {
+	if attempt < maxRetries {
+		query := `                                                                                                                                
+			UPDATE jobs                                                                                                                       
+			SET status = 'pending',                                                                                                           
+				error = $2,
+				worker_id = NULL,                                                                                                             
+				started_at = NULL,                                                                                                            
+				completed_at = NULL,                                                                                                          
+				updated_at = now()                                                                                                            
+			WHERE id = $1 AND status = 'running'                                                                                              
+		`
+		if _, err := s.pool.Exec(ctx, query, jobID, jobErr); err != nil {
+			return false, fmt.Errorf("store.FailJob retry: %w", err)
+		}
+		return true, nil
+	} else {
+		query := `
+		UPDATE jobs                                                                                                                               
+		SET status = 'dead',
+			error = $2,                                                                                                                           
+			completed_at = now(),                                                                                                                 
+			updated_at = now()                                                                                                                    
+		WHERE id = $1 AND status = 'running'                                                                                                      
+    	`
+		if _, err := s.pool.Exec(ctx, query, jobID, jobErr); err != nil {
+			return false, fmt.Errorf("store.FailJob dead: %w", err)
+		}
+		return false, nil
+	}
+}
+
+// Failed job with exponential backoff retry time
+func (s *PostgresStore) FailJobWithBackoff(ctx context.Context, jobID string, jobErr string, attempt int, maxRetries int) (shouldRetry bool, err error) {
+	if attempt < maxRetries {
+		// 10s, 20s, 40s, 80s, ...
+		backoff := time.Duration(10*(1<<attempt)) * time.Second
+		if backoff > 10*time.Minute {
+			backoff = 10 * time.Minute
+		}
+		retryAt := time.Now().Add(backoff)
+
+		query := `                                                                                                                                
+			UPDATE jobs                                                                                                                       
+			SET status = 'scheduled',                                                                                                           
+				error = $2,
+				worker_id = NULL,                                                                                                             
+				started_at = NULL,                                                                                                            
+				completed_at = NULL,                                                                                                          
+				scheduled_at = $3,
+				updated_at = now()                                                                                                            
+			WHERE id = $1 AND status = 'running'                                                                                              
+		`
+		if _, err := s.pool.Exec(ctx, query, jobID, jobErr, retryAt); err != nil {
+			return false, fmt.Errorf("store.FailJobWithBackoff retry: %w", err)
+		}
+		return true, nil
+	} else {
+		query := `
+		UPDATE jobs                                                                                                                               
+		SET status = 'dead',
+			error = $2,                                                                                                                           
+			completed_at = now(),                                                                                                                 
+			updated_at = now()                                                                                                                    
+		WHERE id = $1 AND status = 'running'                                                                                                      
+		`
+		if _, err := s.pool.Exec(ctx, query, jobID, jobErr); err != nil {
+			return false, fmt.Errorf("store.FailJobWithBackoff dead: %w", err)
+		}
+		return false, nil
+	}
+}
+
+func (s *PostgresStore) ListDeadJobs(ctx context.Context, limit int, offset int) ([]*domain.Job, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	query := `                                                                                                                                        
+		SELECT id, type, priority, status, payload, constraints, result, 
+				COALESCE(error, '') as error,
+				max_retries, attempt, timeout_sec, 
+				COALESCE(worker_id, '') as worker_id,                                                                                      
+				scheduled_at, started_at, completed_at, created_at, updated_at                                                                     
+		FROM jobs                                                                                                                                 
+		WHERE status = 'dead'                                                                                                                     
+		ORDER BY completed_at DESC                                                                                                                
+		LIMIT $1 OFFSET $2
+    `
+	rows, err := s.pool.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListDeadJobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []*domain.Job
+	for rows.Next() {
+		job := &domain.Job{}
+		err := rows.Scan(
+			&job.ID,
+			&job.Type,
+			&job.Priority,
+			&job.Status,
+			&job.Payload,
+			&job.Constraints,
+			&job.Result,
+			&job.Error,
+			&job.MaxRetries,
+			&job.Attempt,
+			&job.TimeoutSec,
+			&job.WorkerID,
+			&job.ScheduledAt,
+			&job.StartedAt,
+			&job.CompletedAt,
+			&job.CreatedAt,
+			&job.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store.ListDeadJobs scan: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+type JobStatus struct {
+	Pending   int64
+	Scheduled int64
+	Running   int64
+	Completed int64
+	Failed    int64
+	Cancelled int64
+	Dead      int64
+}
+
+func (s *PostgresStore) GetJobStats(ctx context.Context) (*api.JobStats, error) {
+	query := `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+			COUNT(*) FILTER (WHERE status = 'scheduled') AS scheduled,
+			COUNT(*) FILTER (WHERE status = 'running') AS running,
+			COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+			COUNT(*) FILTER (WHERE status = 'dead') AS dead
+		FROM jobs
+	`
+	stats := &api.JobStats{}
+	err := s.pool.QueryRow(ctx, query).Scan(
+		&stats.Pending,
+		&stats.Scheduled,
+		&stats.Running,
+		&stats.Completed,
+		&stats.Failed,
+		&stats.Cancelled,
+		&stats.Dead,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.GetJobStats: %w", err)
+	}
+	return stats, nil
 }

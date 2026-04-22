@@ -26,6 +26,10 @@ type Queue interface {
 type Store interface {
 	GetJob(ctx context.Context, id string) (*domain.Job, error)
 	UpdateJob(ctx context.Context, job *domain.Job) error
+	ClaimJob(ctx context.Context, jobID string, workerID string) (*domain.Job, error)
+	CompleteJob(ctx context.Context, jobID string, result []byte) error
+	FailJob(ctx context.Context, jobID string, jobErr string, attempt int, maxRetries int) (shouldRetry bool, err error)
+	FailJobWithBackoff(ctx context.Context, jobID string, jobErr string, attempt int, maxRetries int) (shouldRetry bool, err error)
 }
 
 type WorkerPool struct {
@@ -36,6 +40,7 @@ type WorkerPool struct {
 	hostname       string
 	stuckTimeout   time.Duration
 	reaperInterval time.Duration
+	metrics        *PoolMetrics
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -56,7 +61,12 @@ func NewWorkerPool(numWorkers int, queue Queue, store Store, executor Executor) 
 		hostname:       hostname,
 		stuckTimeout:   60 * time.Second,
 		reaperInterval: 30 * time.Second,
+		metrics:        NewPoolMetrics(),
 	}
+}
+
+func (p *WorkerPool) Metrics() *PoolMetrics {
+	return p.metrics
 }
 
 func (p *WorkerPool) Start(ctx context.Context) {
@@ -81,15 +91,15 @@ func (p *WorkerPool) runReaper() {
 	slog.Info("reaper.started",
 		"interval", p.reaperInterval,
 		"timeout", p.stuckTimeout,
-)
+	)
 	ticker := time.NewTicker(p.reaperInterval)
 	defer ticker.Stop()
-	
+
 	for {
-		select{
+		select {
 		case <-p.ctx.Done():
-				slog.Info("reaper.stopped")
-				return
+			slog.Info("reaper.stopped")
+			return
 		case <-ticker.C:
 			p.reapStuckJobs()
 		}
@@ -104,7 +114,7 @@ func (p *WorkerPool) reapStuckJobs() {
 		return
 	}
 
-	if len(stuckJobs) == 0{
+	if len(stuckJobs) == 0 {
 		return
 	}
 
@@ -119,15 +129,23 @@ func (p *WorkerPool) reapStuckJobs() {
 func (p *WorkerPool) requeueStuckJob(stuck queue.StuckJob) {
 	job, err := p.store.GetJob(p.ctx, stuck.JobID)
 	if err != nil {
-		slog.Error("reaper.get_job_error", 
-		"job_id", stuck.JobID, 
-		"error", err)
-		p.queue.RemoveFromProcessing(p.ctx, stuck.JobID)
+		slog.Error("reaper.get_job_error",
+			"job_id", stuck.JobID,
+			"error", err)
+		if err := p.queue.RemoveFromProcessing(p.ctx, stuck.JobID); err != nil {
+			slog.Error("reaper.remove_from_processing_error",
+				"job_id", stuck.JobID,
+				"error", err)
+		}
 		return
 	}
 
 	if job.Status != domain.StatusRunning {
-		p.queue.RemoveFromProcessing(p.ctx, stuck.JobID)
+		if err := p.queue.RemoveFromProcessing(p.ctx, stuck.JobID); err != nil {
+			slog.Error("reaper.remove_from_processing_error",
+				"job_id", stuck.JobID,
+				"error", err)
+		}
 		return
 	}
 
@@ -136,41 +154,50 @@ func (p *WorkerPool) requeueStuckJob(stuck queue.StuckJob) {
 		"worker_id", stuck.WorkerID,
 		"last_seen", stuck.LastSeen,
 		"stuck_for", time.Since(stuck.LastSeen),
-)
+	)
 
-	if job.Attempt >= job.MaxRetries{
+	if job.Attempt >= job.MaxRetries {
 		job.Status = domain.StatusDead
 		job.Error = "job stuck and max retries exceeded"
-		now:= time.Now()
+		now := time.Now()
 		job.CompletedAt = &now
 
-		if err:= p.store.UpdateJob(p.ctx, job); err != nil {
-			slog.Error("reaper.update_dead_error", 
-			"job_id", job.ID, 
-			"error", err)
+		if err := p.store.UpdateJob(p.ctx, job); err != nil {
+			slog.Error("reaper.update_dead_error",
+				"job_id", job.ID,
+				"error", err)
 		}
-		p.queue.RemoveFromProcessing(p.ctx, job.ID)
+		if err := p.queue.RemoveFromProcessing(p.ctx, job.ID); err != nil {
+			slog.Error("reaper.remove_from_processing_error",
+				"job_id", job.ID,
+				"error", err)
+		}
 		return
 	}
 
 	job.Status = domain.StatusPending
-	job.WorkerID = nil
+	job.WorkerID = ""
 	job.StartedAt = nil
 	job.CompletedAt = nil
 	job.Error = "job stuck and requeued by reaper"
 
 	if err := p.store.UpdateJob(p.ctx, job); err != nil {
-		slog.Error("reaper.update_pending_error", 
-		"job_id", job.ID, 
-		"error", err)
+		slog.Error("reaper.update_pending_error",
+			"job_id", job.ID,
+			"error", err)
 		return
 	}
 
-	p.queue.RemoveFromProcessing(p.ctx, job.ID)
+	if err := p.queue.RemoveFromProcessing(p.ctx, job.ID); err != nil {
+		slog.Error("reaper.remove_from_processing_error",
+			"job_id", job.ID,
+			"error", err)
+		return
+	}
 	if err := p.queue.Enqueue(p.ctx, job); err != nil {
-		slog.Error("reaper.enqueue_error", 
-		"job_id", job.ID, 
-		"error", err)
+		slog.Error("reaper.enqueue_error",
+			"job_id", job.ID,
+			"error", err)
 		return
 	}
 }
@@ -209,14 +236,32 @@ func (p *WorkerPool) processOne(workerID string) {
 		return
 	}
 
-	// fetch full job details from the store
-	job, err := p.store.GetJob(p.ctx, queuedJob.ID)
+	// Claim the job atomically in the store to prevent multiple workers from processing the same job
+	job, err := p.store.ClaimJob(p.ctx, queuedJob.ID, workerID)
 	if err != nil {
-		slog.Error("worker.get_job_error",
+		if errors.Is(err, domain.ErrAlreadyClaimed) {
+			slog.Debug("worker.job_already_claimed",
+				"worker_id", workerID,
+				"job_id", queuedJob.ID,
+			)
+			if err := p.queue.Ack(p.ctx, queuedJob.ID); err != nil {
+				slog.Error("worker.ack_error",
+					"worker_id", workerID,
+					"job_id", queuedJob.ID,
+					"error", err)
+			}
+			return
+		}
+		slog.Error("worker.claim_job_error",
 			"worker_id", workerID,
 			"job_id", queuedJob.ID,
 			"error", err)
-		p.queue.Nack(p.ctx, queuedJob.ID, true, job.Priority)
+		if err := p.queue.Nack(p.ctx, queuedJob.ID, true, 0); err != nil {
+			slog.Error("worker.nack_error",
+				"worker_id", workerID,
+				"job_id", queuedJob.ID,
+				"error", err)
+		}
 		return
 	}
 
@@ -231,22 +276,7 @@ func (p *WorkerPool) executeJob(workerID string, job *domain.Job) {
 		"type", job.Type,
 	)
 
-	now := time.Now()
-	job.Status = domain.StatusRunning
-	job.WorkerID = &workerID
-	job.StartedAt = &now
-	job.Attempt++
-
-	if err := p.store.UpdateJob(p.ctx, job); err != nil {
-		slog.Error("worker.update_running_error",
-			"worker_id", workerID,
-			"job_id", job.ID,
-			"error", err)
-		p.queue.Nack(p.ctx, job.ID, true, job.Priority)
-		return
-	}
-
-	// creat timeout context
+	// create timeout context
 	execCtx, cancel := context.WithTimeout(p.ctx, time.Duration(job.TimeoutSec)*time.Second)
 	defer cancel()
 
@@ -260,9 +290,6 @@ func (p *WorkerPool) executeJob(workerID string, job *domain.Job) {
 
 	// stop heartbeat
 	close(heartbeatDone)
-
-	completedAt := time.Now()
-	job.CompletedAt = &completedAt
 
 	if execErr != nil {
 		p.handleJobFailure(workerID, job, execErr, duration)
@@ -293,19 +320,24 @@ func (p *WorkerPool) runHeartbeat(ctx context.Context, jobID string, workerID st
 }
 
 func (p *WorkerPool) handleJobSuccess(workerID string, job *domain.Job, result []byte, duration time.Duration) {
-	job.Status = domain.StatusCompleted
-	job.Result = result
-	job.Error = ""
-
-	if err := p.store.UpdateJob(p.ctx, job); err != nil {
-		slog.Error("worker.update_completed_error",
+	if err := p.store.CompleteJob(p.ctx, job.ID, result); err != nil {
+		slog.Error("worker.complete_job_error",
 			"worker_id", workerID,
 			"job_id", job.ID,
 			"error", err)
 		return
 	}
 
-	p.queue.Ack(p.ctx, job.ID)
+	if err := p.queue.Ack(p.ctx, job.ID); err != nil {
+		slog.Error("worker.ack_error",
+			"worker_id", workerID,
+			"job_id", job.ID,
+			"error", err)
+		return
+	}
+
+	p.metrics.IncProcessed()
+	p.metrics.IncSucceeded()
 
 	slog.Info("worker.job_completed",
 		"worker_id", workerID,
@@ -315,24 +347,29 @@ func (p *WorkerPool) handleJobSuccess(workerID string, job *domain.Job, result [
 }
 
 func (p *WorkerPool) handleJobFailure(workerID string, job *domain.Job, execErr error, duration time.Duration) {
-	job.Error = execErr.Error()
+	// shouldRetry, err := p.store.FailJob(p.ctx, job.ID, execErr.Error(), job.Attempt, job.MaxRetries)
+	shouldRetry, err := p.store.FailJobWithBackoff(p.ctx, job.ID, execErr.Error(), job.Attempt, job.MaxRetries)
+	if err != nil {
+		slog.Error("worker.fail_with_backoff_error",
+			"worker_id", workerID,
+			"job_id", job.ID,
+			"error", err)
+		return
+	}
 
-	if job.Attempt < job.MaxRetries {
-		job.Status = domain.StatusPending
-		job.WorkerID = nil
-		job.StartedAt = nil
-		job.CompletedAt = nil
+	p.metrics.IncProcessed()
+	p.metrics.IncFailed()
 
-		if err := p.store.UpdateJob(p.ctx, job); err != nil {
-			slog.Error("worker.update_retry_error",
+	if shouldRetry {
+		if err := p.queue.Nack(p.ctx, job.ID, true, job.Priority); err != nil {
+			slog.Error("worker.nack_error",
 				"worker_id", workerID,
 				"job_id", job.ID,
 				"error", err)
+			return
 		}
-
-		p.queue.Nack(p.ctx, job.ID, true, job.Priority)
-
-		slog.Warn("worker.job_retry",
+		p.metrics.IncRetried()
+		slog.Warn("worker.job_scheduled_retry",
 			"worker_id", workerID,
 			"job_id", job.ID,
 			"attempt", job.Attempt,
@@ -340,18 +377,15 @@ func (p *WorkerPool) handleJobFailure(workerID string, job *domain.Job, execErr 
 			"error", execErr,
 		)
 	} else {
-		job.Status = domain.StatusDead
-
-		if err := p.store.UpdateJob(p.ctx, job); err != nil {
-			slog.Error("worker.update_dead_error",
+		// job is dead, remove from queue
+		if err := p.queue.Ack(p.ctx, job.ID); err != nil {
+			slog.Error("worker.ack_error",
 				"worker_id", workerID,
 				"job_id", job.ID,
 				"error", err)
+			return
 		}
-
-		// don't requeue
-		p.queue.Nack(p.ctx, job.ID, false, 0)
-
+		p.metrics.IncDead()
 		slog.Error("worker.job_dead",
 			"worker_id", workerID,
 			"job_id", job.ID,

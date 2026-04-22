@@ -17,6 +17,7 @@ func NewRouter(h *Handler) *chi.Mux {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/jobs", h.SubmitJob)
 		r.Get("/jobs", h.ListJobs)
+		r.Get("/jobs/dead", h.ListDeadJobs)
 		r.Get("/jobs/{id}", h.GetJob)
 		r.Delete("/jobs/{id}", h.CancelJob)
 		r.Post("/jobs/{id}/retry", h.RetryJob)

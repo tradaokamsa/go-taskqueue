@@ -29,7 +29,7 @@ type Job struct {
 	Attempt    int
 	TimeoutSec int
 
-	WorkerID *string
+	WorkerID string
 
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

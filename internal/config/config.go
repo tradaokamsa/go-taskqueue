@@ -17,7 +17,7 @@ func Load() *Config {
 	return &Config{
 		DatabaseURL: getEnvStr("DATABASE_URL", "postgres://taskqueue:taskqueue@localhost:5432/taskqueue?sslmode=disable"),
 		RedisURL:    getEnvStr("REDIS_URL", "redis://localhost:6379"),
-		Port:        getEnvInt("PORT", 8080),
+		Port:        getEnvInt("PORT", 8081),
 		Env:         getEnvStr("ENV", "development"),
 		WorkerCount: getEnvInt("WORKER_COUNT", 3),
 	}

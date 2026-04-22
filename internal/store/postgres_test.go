@@ -144,8 +144,7 @@ func TestUpdateJob(t *testing.T) {
 
 	// Update the job
 	job.Status = domain.StatusRunning
-	workerID := "worker-1"
-	job.WorkerID = &workerID
+	job.WorkerID = "worker-1"
 	now := time.Now()
 	job.StartedAt = &now
 
@@ -164,7 +163,7 @@ func TestUpdateJob(t *testing.T) {
 		t.Errorf("expected status %s, got %s", domain.StatusRunning, fetched.Status)
 	}
 
-	if fetched.WorkerID == nil || *fetched.WorkerID != "worker-1" {
+	if fetched.WorkerID != "worker-1" {
 		t.Errorf("expected worker_id worker-1, got %v", fetched.WorkerID)
 	}
 }

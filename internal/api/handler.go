@@ -241,13 +241,13 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
-	// Stub, TODO
-	writeJSON(w, http.StatusOK, map[string]any{
-		"pending":   0,
-		"running":   0,
-		"completed": 0,
-		"failed":    0,
-	})
+	stats, err := h.store.GetJobStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get stats")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -264,4 +264,37 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
+
+func (h *Handler) ListDeadJobs(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	offset := 0
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	jobs, err := h.store.ListDeadJobs(r.Context(), limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list dead jobs")
+		return
+	}
+
+	JobResponses := make([]JobResponse, len(jobs))
+	for i, job := range jobs {
+		JobResponses[i] = toJobResponse(job)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jobs":   JobResponses,
+		"limit":  limit,
+		"offset": offset,
+	})
 }

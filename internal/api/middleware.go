@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,12 +29,36 @@ func RequestID(next http.Handler) http.Handler {
 
 type repsponseWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
+	mu          sync.Mutex
 }
 
 func (rw *repsponseWriter) WriteHeader(statusCode int) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if rw.wroteHeader {
+		return
+	}
 	rw.status = statusCode
+	rw.wroteHeader = true
 	rw.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (rw *repsponseWriter) Write(b []byte) (int, error) {
+	rw.mu.Lock()
+	if !rw.wroteHeader {
+		rw.status = http.StatusOK
+		rw.wroteHeader = true
+	}
+	rw.mu.Unlock()
+	return rw.ResponseWriter.Write(b)
+}
+
+func (rw *repsponseWriter) Status() int {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	return rw.status
 }
 
 func Logger(next http.Handler) http.Handler {
@@ -49,7 +74,7 @@ func Logger(next http.Handler) http.Handler {
 		slog.Info("http request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", wrapped.status,
+			"status", wrapped.Status(),
 			"duration", time.Since(start).Milliseconds(),
 			"request_id", requestID,
 		)
