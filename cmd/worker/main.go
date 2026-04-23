@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/tradaokamsa/go-taskqueue/internal/config"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 	"github.com/tradaokamsa/go-taskqueue/internal/store"
@@ -25,6 +27,7 @@ func main() {
 
 	ctx := context.Background()
 
+	// Connect to database
 	db, err := store.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -33,6 +36,7 @@ func main() {
 	defer db.Close()
 	slog.Info("connected to database")
 
+	// Connect to Redis
 	q, err := queue.NewRedisQueue(ctx, cfg.RedisURL)
 	if err != nil {
 		slog.Error("failed to connect to redis", "error", err)
@@ -41,12 +45,30 @@ func main() {
 	defer q.Close()
 	slog.Info("connected to redis")
 
+	// Create executor
 	executor := worker.NewFakeExecutor()
 
+	// Start worker pool
 	pool := worker.NewWorkerPool(cfg.WorkerCount, q, db, executor)
 	pool.Start(ctx)
 
 	slog.Info("worker started", "workers", cfg.WorkerCount)
+
+	// Start metrics server
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK"))
+		})
+
+		addr := ":" + cfg.WorkerMetricsPort
+		slog.Info("starting worker metrics server", "addr", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			slog.Error("worker metrics server error", "error", err)
+		}
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

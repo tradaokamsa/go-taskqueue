@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func NewRouter(h *Handler) *chi.Mux {
@@ -13,6 +14,8 @@ func NewRouter(h *Handler) *chi.Mux {
 
 	r.Get("/health", h.Health)
 	r.Get("/ready", h.Ready)
+
+	r.Handle("/metrics", promhttp.Handler())
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/jobs", h.SubmitJob)

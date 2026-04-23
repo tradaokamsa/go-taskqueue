@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 )
 
 type Handler struct {
@@ -121,10 +123,18 @@ func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		ScheduledAt: scheduledAt,
 	}
 
+	slog.Info("job.submitted",
+		"job_id", job.ID,
+		"type", job.Type,
+		"priority", job.Priority,
+	)
+
 	if err := h.store.CreateJob(r.Context(), job); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
+
+	metrics.JobsSubmitted.WithLabelValues(job.Type).Inc()
 
 	if h.queue != nil {
 		if err := h.queue.Enqueue(r.Context(), job); err != nil {
@@ -206,6 +216,8 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to cancel job")
 		return
 	}
+
+	slog.Info("job.cancelled", "job_id", id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
@@ -237,6 +249,7 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	slog.Info("job.retried", "job_id", job.ID, "attempt", job.Attempt)
 	writeJSON(w, http.StatusOK, toJobResponse(job))
 }
 

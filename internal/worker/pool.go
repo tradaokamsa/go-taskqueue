@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 )
 
@@ -81,6 +82,9 @@ func (p *WorkerPool) Start(ctx context.Context) {
 
 	p.wg.Add(1)
 	go p.runReaper()
+
+	metrics.ActiveWorkers.Set(float64(p.numWorkers))
+
 	slog.Info("worker_pool.started", "workers", p.numWorkers)
 }
 
@@ -339,6 +343,9 @@ func (p *WorkerPool) handleJobSuccess(workerID string, job *domain.Job, result [
 	p.metrics.IncProcessed()
 	p.metrics.IncSucceeded()
 
+	metrics.JobDuration.WithLabelValues(job.Type, "completed").Observe(duration.Seconds())
+	metrics.JobsProcessed.WithLabelValues(job.Type, "completed").Inc()
+
 	slog.Info("worker.job_completed",
 		"worker_id", workerID,
 		"job_id", job.ID,
@@ -369,6 +376,10 @@ func (p *WorkerPool) handleJobFailure(workerID string, job *domain.Job, execErr 
 			return
 		}
 		p.metrics.IncRetried()
+
+		metrics.JobDuration.WithLabelValues(job.Type, "retried").Observe(duration.Seconds())
+		metrics.JobsProcessed.WithLabelValues(job.Type, "retried").Inc()
+
 		slog.Warn("worker.job_scheduled_retry",
 			"worker_id", workerID,
 			"job_id", job.ID,
@@ -386,6 +397,10 @@ func (p *WorkerPool) handleJobFailure(workerID string, job *domain.Job, execErr 
 			return
 		}
 		p.metrics.IncDead()
+
+		metrics.JobDuration.WithLabelValues(job.Type, "dead").Observe(duration.Seconds())
+		metrics.JobsProcessed.WithLabelValues(job.Type, "dead").Inc()
+
 		slog.Error("worker.job_dead",
 			"worker_id", workerID,
 			"job_id", job.ID,
