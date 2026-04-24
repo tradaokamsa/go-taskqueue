@@ -22,6 +22,7 @@ type Queue interface {
 	Heartbeat(ctx context.Context, jobID string, workerID string) error
 	GetStuckJobs(ctx context.Context, timeout time.Duration) ([]queue.StuckJob, error)
 	RemoveFromProcessing(ctx context.Context, jobID string) error
+	Len(ctx context.Context) (int64, error)
 }
 
 type Store interface {
@@ -106,7 +107,15 @@ func (p *WorkerPool) runReaper() {
 			return
 		case <-ticker.C:
 			p.reapStuckJobs()
+			p.updateQueueMetrics()
 		}
+	}
+}
+
+func (p *WorkerPool) updateQueueMetrics() {
+	depth, err := p.queue.Len(p.ctx)
+	if err == nil {
+		metrics.QueueDepth.Set(float64(depth))
 	}
 }
 
@@ -279,6 +288,9 @@ func (p *WorkerPool) executeJob(workerID string, job *domain.Job) {
 		"job_id", job.ID,
 		"type", job.Type,
 	)
+
+	metrics.ProcessingCount.Inc()
+	defer metrics.ProcessingCount.Dec()
 
 	// create timeout context
 	execCtx, cancel := context.WithTimeout(p.ctx, time.Duration(job.TimeoutSec)*time.Second)

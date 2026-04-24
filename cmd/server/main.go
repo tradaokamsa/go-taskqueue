@@ -12,6 +12,7 @@ import (
 
 	"github.com/tradaokamsa/go-taskqueue/internal/api"
 	"github.com/tradaokamsa/go-taskqueue/internal/config"
+	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 	"github.com/tradaokamsa/go-taskqueue/internal/store"
 )
 
@@ -34,7 +35,16 @@ func main() {
 
 	slog.Info("connected to database")
 
-	handler := api.NewHandler(db, nil) // nil queue for now
+	q, err := queue.NewRedisQueue(ctx, cfg.RedisURL)
+	if err != nil {
+		slog.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer q.Close()
+
+	slog.Info("connected to redis")
+
+	handler := api.NewHandler(db, q)
 	router := api.NewRouter(handler)
 
 	srv := &http.Server{

@@ -6,15 +6,36 @@ services:
       POSTGRES_PASSWORD: taskqueue
       POSTGRES_DB: taskqueue
     ports:
-     - "5432:5432"
+      - "5432:5432"
     volumes:
-     - postgres-data:/var/lib/postgresql/data
-  
+      - postgres-data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
     ports:
-     - "6379:6379"
+      - "6379:6379"
     command: redis-server --appendonly yes
-  
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
 volumes:
   postgres-data:
+  prometheus-data:
+  grafana-data:

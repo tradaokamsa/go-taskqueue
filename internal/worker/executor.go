@@ -30,8 +30,8 @@ func (e *FakeExecutor) Execute(ctx context.Context, job *domain.Job) ([]byte, er
 	if sleepDuration < time.Second {
 		sleepDuration = time.Second
 	}
-	if sleepDuration > 5*time.Second {
-		sleepDuration = 5 * time.Second
+	if sleepDuration > 10*time.Second {
+		sleepDuration = 10 * time.Second
 	}
 
 	select {
