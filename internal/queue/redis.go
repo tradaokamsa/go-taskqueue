@@ -36,6 +36,10 @@ func NewRedisQueue(ctx context.Context, redisURL string) (*RedisQueue, error) {
 	return &RedisQueue{client: client}, nil
 }
 
+func (q *RedisQueue) Client() *redis.Client {
+	return q.client
+}
+
 func (q *RedisQueue) Close() error {
 	return q.client.Close()
 }

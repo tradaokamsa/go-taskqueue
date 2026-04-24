@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 )
@@ -183,6 +184,16 @@ func (q *mockQueue) RemoveFromProcessing(ctx context.Context, jobID string) erro
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.processing, jobID)
+	return nil
+}
+
+func (q *mockQueue) Len(ctx context.Context) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return int64(len(q.pending)), nil
+}
+
+func (q *mockQueue) Client() *redis.Client {
 	return nil
 }
 

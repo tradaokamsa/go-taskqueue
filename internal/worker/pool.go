@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+	"github.com/tradaokamsa/go-taskqueue/internal/lock"
 	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 )
@@ -23,6 +25,7 @@ type Queue interface {
 	GetStuckJobs(ctx context.Context, timeout time.Duration) ([]queue.StuckJob, error)
 	RemoveFromProcessing(ctx context.Context, jobID string) error
 	Len(ctx context.Context) (int64, error)
+	Client() *redis.Client
 }
 
 type Store interface {
@@ -97,6 +100,11 @@ func (p *WorkerPool) runReaper() {
 		"interval", p.reaperInterval,
 		"timeout", p.stuckTimeout,
 	)
+
+	lockKey := "taskqueue:reaper:lock"
+	lockValue := fmt.Sprintf("%s:%d", p.hostname, time.Now().UnixNano())
+	lockTTL := p.reaperInterval
+
 	ticker := time.NewTicker(p.reaperInterval)
 	defer ticker.Stop()
 
@@ -106,10 +114,29 @@ func (p *WorkerPool) runReaper() {
 			slog.Info("reaper.stopped")
 			return
 		case <-ticker.C:
-			p.reapStuckJobs()
-			p.updateQueueMetrics()
+			p.tryRunReaper(lockKey, lockValue, lockTTL)
 		}
 	}
+}
+
+func (p *WorkerPool) tryRunReaper(lockKey, lockValue string, lockTTL time.Duration) {
+	dl := lock.NewDistributedLock(p.queue.Client(), lockKey, lockValue, lockTTL)
+
+	acquired, err := dl.Acquire(p.ctx)
+	if err != nil {
+		slog.Error("reaper.lock_error", "error", err)
+		return
+	}
+
+	if !acquired {
+		slog.Info("reaper.lock_not_acquired", "worker", p.hostname)
+		return
+	}
+
+	slog.Info("reaper.lock_acquired", "worker", p.hostname)
+
+	p.reapStuckJobs()
+	p.updateQueueMetrics()
 }
 
 func (p *WorkerPool) updateQueueMetrics() {
