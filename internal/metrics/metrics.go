@@ -15,6 +15,14 @@ var (
 		[]string{"type"},
 	)
 
+	RateLimitHits = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "taskqueue_ratelimit_hits_total",
+			Help: "Total number of rate limit hits",
+		},
+		[]string{"client"},
+	)
+
 	// Worker Metrics
 	JobDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{

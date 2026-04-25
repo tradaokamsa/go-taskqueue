@@ -9,19 +9,24 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Handler struct {
-	store JobStore
-	queue Queue
+	store       JobStore
+	queue       Queue
+	redisClient *redis.Client
 }
 
-func NewHandler(store JobStore, queue Queue) *Handler {
+func NewHandler(store JobStore, queue Queue, redisClient *redis.Client) *Handler {
 	return &Handler{
-		store: store,
-		queue: queue,
+		store:       store,
+		queue:       queue,
+		redisClient: redisClient,
 	}
 }
 
@@ -80,6 +85,9 @@ func toJobResponse(job *domain.Job) JobResponse {
 }
 
 func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("api").Start(r.Context(), "SubmitJob")
+	defer span.End()
+
 	var req SubmitJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -90,6 +98,11 @@ func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "type is required")
 		return
 	}
+
+	span.SetAttributes(
+		attribute.String("job.type", req.Type),
+		attribute.Int("job.priority", req.Priority),
+	)
 	if req.MaxRetries == 0 {
 		req.MaxRetries = 3
 	}
@@ -123,22 +136,24 @@ func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 		ScheduledAt: scheduledAt,
 	}
 
+	if err := h.store.CreateJob(ctx, job); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create job")
+		return
+	}
+
+	span.SetAttributes(attribute.String("job.id", job.ID))
+
+	metrics.JobsSubmitted.WithLabelValues(job.Type).Inc()
+
 	slog.Info("job.submitted",
 		"job_id", job.ID,
 		"type", job.Type,
 		"priority", job.Priority,
 	)
 
-	if err := h.store.CreateJob(r.Context(), job); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create job")
-		return
-	}
-
-	metrics.JobsSubmitted.WithLabelValues(job.Type).Inc()
-
 	if h.queue != nil {
-		if err := h.queue.Enqueue(r.Context(), job); err != nil {
-			// TODO
+		if err := h.queue.Enqueue(ctx, job); err != nil {
+			slog.Error("failed to enqueue job", "job_id", job.ID, "error", err) // job is in store but failed to enqueue, can be retried later
 		}
 	}
 
@@ -146,12 +161,18 @@ func (h *Handler) SubmitJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("api").Start(r.Context(), "GetJob")
+	defer span.End()
+
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "job id is required")
 		return
 	}
-	job, err := h.store.GetJob(r.Context(), id)
+
+	span.SetAttributes(attribute.String("job.id", id))
+
+	job, err := h.store.GetJob(ctx, id)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "job not found")
@@ -245,7 +266,7 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 	// Re-enqueue if queue is available
 	if h.queue != nil {
 		if err := h.queue.Enqueue(r.Context(), job); err != nil {
-			// TODO
+			slog.Error("failed to re-enqueue job", "job_id", job.ID, "error", err) // job is retried in store but failed to enqueue, can be retried later
 		}
 	}
 

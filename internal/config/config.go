@@ -12,6 +12,7 @@ type Config struct {
 	Env               string
 	WorkerCount       int
 	WorkerMetricsPort string
+	OTLPEndpoint      string
 }
 
 func Load() *Config {
@@ -22,6 +23,7 @@ func Load() *Config {
 		Env:               getEnvStr("ENV", "development"),
 		WorkerCount:       getEnvInt("WORKER_COUNT", 3),
 		WorkerMetricsPort: getEnvStr("WORKER_METRICS_PORT", "9090"),
+		OTLPEndpoint:      getEnvStr("OTLP_ENDPOINT", "localhost:4318"),
 	}
 }
 

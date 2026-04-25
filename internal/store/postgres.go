@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tradaokamsa/go-taskqueue/internal/api"
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var _ api.JobStore = (*PostgresStore)(nil)
@@ -35,6 +37,9 @@ func (s *PostgresStore) Close() {
 }
 
 func (s *PostgresStore) CreateJob(ctx context.Context, job *domain.Job) error {
+	ctx, span := otel.Tracer("store").Start(ctx, "CreateJob")
+	defer span.End()
+
 	query := `
 		INSERT INTO jobs (type, priority, status, payload, constraints, max_retries, timeout_sec, scheduled_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -51,12 +56,20 @@ func (s *PostgresStore) CreateJob(ctx context.Context, job *domain.Job) error {
 		job.ScheduledAt,
 	).Scan(&job.ID, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
+		span.RecordError(err)
 		return fmt.Errorf("store.CreateJob: %w", err)
 	}
+
+	span.SetAttributes(attribute.String("job.id", job.ID))
 	return nil
 }
 
 func (s *PostgresStore) GetJob(ctx context.Context, id string) (*domain.Job, error) {
+	ctx, span := otel.Tracer("store").Start(ctx, "GetJob")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("job.id", id))
+
 	query := `
 		SELECT id, type, priority, status, payload, constraints, result, 
 				COALESCE(error, '') as error,
@@ -90,6 +103,7 @@ func (s *PostgresStore) GetJob(ctx context.Context, id string) (*domain.Job, err
 		if err == pgx.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
+		span.RecordError(err)
 		return nil, fmt.Errorf("store.GetJob: %w", err)
 	}
 	return job, nil

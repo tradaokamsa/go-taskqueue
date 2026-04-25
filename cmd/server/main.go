@@ -14,6 +14,7 @@ import (
 	"github.com/tradaokamsa/go-taskqueue/internal/config"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 	"github.com/tradaokamsa/go-taskqueue/internal/store"
+	"github.com/tradaokamsa/go-taskqueue/internal/telemetry"
 )
 
 func main() {
@@ -26,6 +27,14 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	shutdownTracer, err := telemetry.InitTracer(ctx, "taskqueue-api", cfg.OTLPEndpoint)
+	if err != nil {
+		slog.Error("failed to initialize tracer", "error", err)
+	} else {
+		defer shutdownTracer(ctx)
+	}
+
 	db, err := store.NewPostgresStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("failed to connect to database", "error", err)
@@ -44,7 +53,7 @@ func main() {
 
 	slog.Info("connected to redis")
 
-	handler := api.NewHandler(db, q)
+	handler := api.NewHandler(db, q, q.Client())
 	router := api.NewRouter(handler)
 
 	srv := &http.Server{
