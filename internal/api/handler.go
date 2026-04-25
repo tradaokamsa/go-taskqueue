@@ -34,7 +34,9 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if data != nil {
-		json.NewEncoder(w).Encode(data)
+		if err := json.NewEncoder(w).Encode(data); err != nil {
+			slog.Error("failed to encode JSON response", "error", err)
+		}
 	}
 }
 
@@ -231,7 +233,7 @@ func (h *Handler) CancelJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, domain.ErrInvalidTransition) {
-			writeError(w, http.StatusBadRequest, "job cannot be cancelled in its current state")
+			writeError(w, http.StatusConflict, "job cannot be cancelled in its current state")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to cancel job")
@@ -256,7 +258,7 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, domain.ErrInvalidTransition) {
-			writeError(w, http.StatusBadRequest, "job cannot be retried in its current state")
+			writeError(w, http.StatusConflict, "job cannot be retried in its current state")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to retry job")
