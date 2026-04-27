@@ -50,7 +50,7 @@ func setupTestRedis(t *testing.T) *RedisQueue {
 		t.Fatalf("failed to create RedisQueue: %v", err)
 	}
 
-	t.Cleanup(func() { queue.Close() })
+	t.Cleanup(func() { _ = queue.Close() })
 
 	return queue
 }

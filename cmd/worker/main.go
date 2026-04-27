@@ -42,7 +42,7 @@ func main() {
 		slog.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
 	}
-	defer q.Close()
+	defer func() { _ = q.Close() }()
 	slog.Info("connected to redis")
 
 	// Create executor
@@ -60,7 +60,7 @@ func main() {
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		})
 
 		addr := ":" + cfg.WorkerMetricsPort

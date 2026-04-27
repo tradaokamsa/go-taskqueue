@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -67,55 +66,4 @@ func TestNewRouter_JobEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("DELETE job: expected 200, got %d", rec.Code)
 	}
-}
-
-// mockJobStore for router tests - reuse from handler_test.go
-type routerMockStore struct {
-	jobs map[string]*domain.Job
-}
-
-func (m *routerMockStore) CreateJob(ctx context.Context, job *domain.Job) error {
-	job.ID = "new-job-id"
-	m.jobs[job.ID] = job
-	return nil
-}
-func (m *routerMockStore) GetJob(ctx context.Context, id string) (*domain.Job, error) {
-	job, ok := m.jobs[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return job, nil
-}
-func (m *routerMockStore) UpdateJob(ctx context.Context, job *domain.Job) error {
-	m.jobs[job.ID] = job
-	return nil
-}
-func (m *routerMockStore) ListJobs(ctx context.Context, opts ListOptions) ([]*domain.Job, string, error) {
-	jobs := make([]*domain.Job, 0)
-	for _, j := range m.jobs {
-		jobs = append(jobs, j)
-	}
-	return jobs, "", nil
-}
-func (m *routerMockStore) ListDeadJobs(ctx context.Context, limit int, offset int) ([]*domain.Job, error) {
-	return []*domain.Job{}, nil
-}
-func (m *routerMockStore) CancelJob(ctx context.Context, id string) error {
-	if _, ok := m.jobs[id]; !ok {
-		return domain.ErrNotFound
-	}
-	return nil
-}
-func (m *routerMockStore) RetryJob(ctx context.Context, id string) (*domain.Job, error) {
-	job, ok := m.jobs[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return job, nil
-}
-func (m *routerMockStore) GetJobStats(ctx context.Context) (*JobStats, error) {
-	return &JobStats{}, nil
-}
-func (m *routerMockStore) Ping(ctx context.Context) error {
-	return nil
 }

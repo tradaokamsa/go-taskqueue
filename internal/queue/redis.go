@@ -178,7 +178,7 @@ func (q *RedisQueue) GetStuckJobs(ctx context.Context, timeout time.Duration) ([
 		for i := len(value) - 1; i >= 0; i-- {
 			if value[i] == ':' {
 				workerID = value[:i]
-				fmt.Sscanf(value[i+1:], "%d", &timestamp)
+				_, _ = fmt.Sscanf(value[i+1:], "%d", &timestamp)
 				break
 			}
 		}

@@ -150,7 +150,7 @@ func TestSubmitJob_Success(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 
 	if resp["id"] == nil {
 		t.Error("expected job id in response")
@@ -220,7 +220,7 @@ func TestGetJob_Success(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 
 	if resp["id"] != "job-123" {
 		t.Errorf("expected id 'job-123', got %v", resp["id"])
@@ -350,7 +350,7 @@ func TestStats(t *testing.T) {
 	}
 
 	var resp JobStats
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 
 	if resp.Pending != 5 {
 		t.Errorf("expected pending 5, got %d", resp.Pending)
@@ -373,7 +373,7 @@ func TestListJobs_Success(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 
 	jobs := resp["jobs"].([]interface{})
 	if len(jobs) != 2 {
@@ -545,7 +545,7 @@ func TestSubmitJob_WithScheduledAt(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 
 	if resp["status"] != "scheduled" {
 		t.Errorf("expected status 'scheduled', got %v", resp["status"])

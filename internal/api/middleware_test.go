@@ -29,7 +29,7 @@ func TestRequestID_AddsHeader(t *testing.T) {
 func TestLogger_LogsRequest(t *testing.T) {
 	handler := Logger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

@@ -32,7 +32,7 @@ func main() {
 	if err != nil {
 		slog.Error("failed to initialize tracer", "error", err)
 	} else {
-		defer shutdownTracer(ctx)
+		defer func() { _ = shutdownTracer(ctx) }()
 	}
 
 	db, err := store.NewPostgresStore(ctx, cfg.DatabaseURL)
@@ -49,7 +49,7 @@ func main() {
 		slog.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
 	}
-	defer q.Close()
+	defer func() { _ = q.Close() }()
 
 	slog.Info("connected to redis")
 

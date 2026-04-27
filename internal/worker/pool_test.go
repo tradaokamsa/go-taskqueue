@@ -225,7 +225,7 @@ func TestWorkerPoolStress(t *testing.T) {
 			CreatedAt:  time.Now(),
 		}
 		store.AddJob(job)
-		q.Enqueue(context.Background(), job)
+		_ = q.Enqueue(context.Background(), job)
 	}
 
 	pool := NewWorkerPool(numWorkers, q, store, executor)
@@ -243,7 +243,7 @@ func TestWorkerPoolStress(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	pool.Shutdown(5 * time.Second)
+	_ = pool.Shutdown(5 * time.Second)
 
 	completed := store.CountByStatus(domain.StatusCompleted)
 	if completed != numJobs {
