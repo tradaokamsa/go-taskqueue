@@ -7,6 +7,7 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 )
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 )
 
@@ -64,9 +65,9 @@ func (rl *RateLimiter) Allow(ctx context.Context, key string) (bool, int, error)
 		return false, 0, fmt.Errorf("ratelimit: %w", err)
 	}
 
-	values := result.([]interface{})
-	allowed := values[0].(int64) == 1
-	remaining := int(values[1].(int64))
+	values := result.([]interface{})    //nolint:errcheck // Lua script returns known types
+	allowed := values[0].(int64) == 1   //nolint:errcheck
+	remaining := int(values[1].(int64)) //nolint:errcheck
 
 	return allowed, remaining, nil
 }

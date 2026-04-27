@@ -63,5 +63,5 @@ func (l *DistributedLock) Extend(ctx context.Context, ttl time.Duration) (bool, 
 	if err != nil {
 		return false, err
 	}
-	return result.(int64) == 1, nil
+	return result.(int64) == 1, nil //nolint:errcheck // Lua script returns int64
 }

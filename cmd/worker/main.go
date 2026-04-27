@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/tradaokamsa/go-taskqueue/internal/config"
 	"github.com/tradaokamsa/go-taskqueue/internal/queue"
 	"github.com/tradaokamsa/go-taskqueue/internal/store"

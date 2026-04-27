@@ -9,10 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/tradaokamsa/go-taskqueue/internal/api"
-	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/tradaokamsa/go-taskqueue/internal/api"
+	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 )
 
 var _ api.JobStore = (*PostgresStore)(nil)

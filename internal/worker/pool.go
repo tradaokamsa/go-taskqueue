@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	"github.com/tradaokamsa/go-taskqueue/internal/domain"
 	"github.com/tradaokamsa/go-taskqueue/internal/lock"
 	"github.com/tradaokamsa/go-taskqueue/internal/metrics"

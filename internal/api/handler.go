@@ -10,10 +10,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
-	"github.com/tradaokamsa/go-taskqueue/internal/domain"
-	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/tradaokamsa/go-taskqueue/internal/domain"
+	"github.com/tradaokamsa/go-taskqueue/internal/metrics"
 )
 
 type Handler struct {
